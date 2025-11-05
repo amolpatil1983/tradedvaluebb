@@ -58,8 +58,8 @@ def compute_adx(df, window=14):
     tr2 = (high - close.shift()).abs()
     tr3 = (low - close.shift()).abs()
     
-    # Fix: Use pandas concat and max instead of numpy
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    # Calculate True Range as maximum of the three values
+    tr = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3}).max(axis=1)
 
     atr = tr.rolling(window=window).mean()
     plus_di = 100 * (plus_dm.rolling(window=window).mean() / atr)
@@ -67,7 +67,9 @@ def compute_adx(df, window=14):
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     adx = dx.rolling(window=window).mean()
-    return adx
+    
+    # Ensure we return a Series, not a DataFrame
+    return pd.Series(adx, index=df.index, name='ADX')
 
 def get_zone(row):
     p, v, t, r, a = row["%B_Close"], row["%B_Volume"], row["%B_Traded_Value"], row["%B_RSI"], row["%B_ADX"]
