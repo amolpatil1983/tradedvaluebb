@@ -49,31 +49,27 @@ if st.button("Fetch & Analyze"):
 
         data = data.dropna()
 
-        # --- Plot 1: Price Chart ---
-        fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Close", line=dict(color="cyan")))
-        fig1.update_layout(
-            title=f"{symbol} - Price Chart ({lookback_period})",
-            xaxis_title="Date", yaxis_title="Price (INR)", template="plotly_dark", height=400
-        )
+        # --- Plot: %BB Combined Chart Only ---
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Price"], name="%B (Price)", line=dict(color="yellow")))
+        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Volume"], name="%B (Volume)", line=dict(color="lightgreen")))
+        fig.add_trace(go.Scatter(x=data.index, y=data["%B_TradedVal"], name="%B (Traded Value)", line=dict(color="orange")))
 
-        # --- Plot 2: %BB Combined Chart ---
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=data.index, y=data["%B_Price"], name="%B (Price)", line=dict(color="yellow")))
-        fig2.add_trace(go.Scatter(x=data.index, y=data["%B_Volume"], name="%B (Volume)", line=dict(color="lightgreen")))
-        fig2.add_trace(go.Scatter(x=data.index, y=data["%B_TradedVal"], name="%B (Traded Value)", line=dict(color="orange")))
-        fig2.add_hline(y=100, line_dash="dot", annotation_text="Upper Band")
-        fig2.add_hline(y=0, line_dash="dot", annotation_text="Lower Band")
-        fig2.add_hline(y=50, line_dash="dot", annotation_text="Midpoint (MA)")
-        fig2.update_layout(
+        fig.add_hline(y=100, line_dash="dot", annotation_text="Upper Band", annotation_position="top left")
+        fig.add_hline(y=0, line_dash="dot", annotation_text="Lower Band", annotation_position="bottom left")
+        fig.add_hline(y=50, line_dash="dot", annotation_text="Midpoint (MA)", annotation_position="top left")
+
+        fig.update_layout(
             title=f"{symbol} - %B Comparison (Price / Volume / Traded Value)",
-            xaxis_title="Date", yaxis_title="%B", template="plotly_dark", height=500,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
+            xaxis_title="Date",
+            yaxis_title="%B",
+            template="plotly_dark",
+            height=600,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
         )
 
-        # --- Display Charts ---
-        st.plotly_chart(fig1, use_container_width=True)
-        st.plotly_chart(fig2, use_container_width=True)
+        # --- Display Chart ---
+        st.plotly_chart(fig, use_container_width=True)
 
         # --- Optional Data Table ---
         with st.expander("Show Raw Data"):
