@@ -100,6 +100,7 @@ if uploaded_file:
     stocks_df.columns = stocks_df.columns.str.strip()
     st.write("Columns:", list(stocks_df.columns))
     st.write("Unique values in SERIES column:", stocks_df["SERIES"].unique())
+    stocks_df["SERIES"] = stocks_df["SERIES"].str.strip()
     stocks_df = stocks_df[stocks_df["SERIES"] == "EQ"]
     symbols = stocks_df["Symbol"].unique().tolist()
 
