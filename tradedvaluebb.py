@@ -1,91 +1,69 @@
-# streamlit_app.py
 import streamlit as st
-import pandas as pd
-import numpy as np
 import yfinance as yf
-import datetime as dt
+import pandas as pd
 import plotly.graph_objects as go
 
-# --- App Title ---
-st.set_page_config(page_title="Stock Traded Value %BB Tracker", layout="wide")
-st.title("📈 Stock %BB Analysis on Traded Value (Price × Volume)")
+st.set_page_config(page_title="Stock %BB Visualizer", layout="wide")
 
-# --- Sidebar Inputs ---
-symbol = st.text_input("Enter Stock Symbol (e.g., HBLENGIN):", "HBLENGIN").upper()
-granularity = st.selectbox("Select Granularity", ["1d", "1wk"])
-lookback_days = st.number_input("Lookback Period (days):", min_value=30, max_value=2000, value=365)
+st.title("📈 Price and %BB Visualizer (Based on Daily Traded Value)")
+st.markdown("""
+This app pulls historical stock data from Yahoo Finance (NSE India) and computes:
+- **Traded Value = Close × Volume**
+- **%B (Percent Bollinger Band)** from Traded Value  
+""")
+
+# --- User Inputs ---
+symbol = st.text_input("Enter Stock Symbol (NSE):", "HDFCBANK").strip().upper()
+lookback_period = st.selectbox("Lookback Period:", ["6mo", "1y", "2y", "3y", "5y"], index=1)
+interval = st.selectbox("Data Interval:", ["1d", "1wk", "1mo"], index=0)
+
 bb_window = st.slider("Bollinger Band Window:", 10, 60, 20)
 bb_std = st.slider("BB Standard Deviations:", 1.0, 3.0, 2.0, step=0.1)
 
-# --- Date Range ---
-end_date = dt.date.today()
-start_date = end_date - dt.timedelta(days=lookback_days)
+if st.button("Fetch & Analyze"):
+    ticker = symbol + ".NS"
+    with st.spinner(f"Fetching {lookback_period} data for {ticker}..."):
+        data = yf.download(ticker, period=lookback_period, interval=interval, progress=False)
+    
+    if data.empty:
+        st.error("No data found. Please check the symbol or try another period.")
+    else:
+        # --- Compute Traded Value and %BB ---
+        data["Traded_Value"] = data["Close"] * data["Volume"]
 
-# --- Fetch Data ---
-ticker = f"{symbol}.NS"
-st.write(f"Fetching data for **{ticker}** from {start_date} to {end_date}...")
-data = yf.download(ticker, start=start_date, end=end_date, interval=granularity, progress=False)
+        # Bollinger Bands on Traded Value
+        data["MA"] = data["Traded_Value"].rolling(bb_window).mean()
+        data["STD"] = data["Traded_Value"].rolling(bb_window).std()
+        data["Upper"] = data["MA"] + bb_std * data["STD"]
+        data["Lower"] = data["MA"] - bb_std * data["STD"]
+        data["%B"] = (data["Traded_Value"] - data["Lower"]) / (data["Upper"] - data["Lower"]) * 100
 
-if data.empty:
-    st.error("No data found. Check the symbol or try a longer date range.")
-    st.stop()
+        # Drop NA for smooth chart
+        data = data.dropna()
 
-# --- Ensure Continuous Dates ---
-data = data.asfreq('D')  # daily frequency even if missing
-data[['Open','High','Low','Close','Adj Close']] = data[['Open','High','Low','Close','Adj Close']].ffill()
-data['Volume'] = data['Volume'].fillna(0)
+        # --- Plot 1: Price Chart ---
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Close", line=dict(color="blue")))
+        fig1.update_layout(
+            title=f"{symbol} - Price Chart ({lookback_period})",
+            xaxis_title="Date", yaxis_title="Price (INR)", template="plotly_dark", height=400
+        )
 
-# --- Compute Traded Value and %BB ---
-data['Traded_Value'] = data['Close'] * data['Volume']
+        # --- Plot 2: %BB Chart ---
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=data.index, y=data["%B"], name="%B", line=dict(color="orange")))
+        fig2.add_hline(y=100, line_dash="dot", annotation_text="Upper Band")
+        fig2.add_hline(y=0, line_dash="dot", annotation_text="Lower Band")
+        fig2.add_hline(y=50, line_dash="dot", annotation_text="Midpoint (MA)")
+        fig2.update_layout(
+            title=f"{symbol} - %B (Bollinger from Traded Value)",
+            xaxis_title="Date", yaxis_title="%B", template="plotly_dark", height=400
+        )
 
-# Bollinger Band Calculations
-rolling_mean = data['Traded_Value'].rolling(bb_window).mean()
-rolling_std = data['Traded_Value'].rolling(bb_window).std()
+        # --- Display Charts ---
+        st.plotly_chart(fig1, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True)
 
-data['BB_Upper'] = rolling_mean + (bb_std * rolling_std)
-data['BB_Lower'] = rolling_mean - (bb_std * rolling_std)
-data['%BB'] = (data['Traded_Value'] - data['BB_Lower']) / (data['BB_Upper'] - data['BB_Lower'])
-
-# --- Layout ---
-col1, col2 = st.columns([2, 1])
-
-# --- Plot Price Chart ---
-with col1:
-    st.subheader("Stock Price & Bollinger Bands (%BB of Traded Value)")
-    fig = go.Figure()
-
-    # Price chart
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['Close'], name='Close Price',
-        mode='lines', line=dict(color='royalblue', width=2)
-    ))
-
-    # %BB chart (as secondary axis)
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['%BB'] * data['Close'].max(), 
-        name='%BB (scaled)', mode='lines',
-        line=dict(color='orange', width=2, dash='dot'),
-        yaxis='y2'
-    ))
-
-    fig.update_layout(
-        yaxis=dict(title="Price (₹)", side='left'),
-        yaxis2=dict(title="%BB (scaled)", overlaying='y', side='right', showgrid=False),
-        title=f"{symbol} — Price vs Traded Value %BB",
-        template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# --- Summary Stats ---
-with col2:
-    st.subheader("Recent Statistics")
-    latest = data.iloc[-1]
-    st.metric("Last Close (₹)", f"{latest['Close']:.2f}")
-    st.metric("%BB of Traded Value", f"{latest['%BB']*100:.1f}%")
-    st.metric("Avg Traded Value (₹ Cr)", f"{data['Traded_Value'].rolling(bb_window).mean().iloc[-1]/1e7:.2f}")
-    st.write("— %BB near 0 ⇒ low activity; near 1 ⇒ high activity/band top")
-
-# --- Option to Show Data ---
-if st.checkbox("Show raw data table"):
-    st.dataframe(data.tail(50))
+        # --- Optional Data Table ---
+        with st.expander("Show Raw Data"):
+            st.dataframe(data.tail(20))
