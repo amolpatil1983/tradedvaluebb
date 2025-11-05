@@ -26,7 +26,7 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def compute_adx(data, period=14):
-    high, low, close = data["High"], data["Low"], data["Close"]
+    high, low, close = data["High"], data["Low"], data["Adj Close"]
     plus_dm = high.diff()
     minus_dm = low.diff()
     plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
