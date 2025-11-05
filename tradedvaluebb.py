@@ -44,9 +44,9 @@ def compute_rsi(df, window=14):
     return rsi
 
 def compute_adx(df, window=14):
-    high = df["High"]
-    low = df["Low"]
-    close = df["Close"]
+    high = df["High"].copy()
+    low = df["Low"].copy()
+    close = df["Close"].copy()
 
     plus_dm = high.diff()
     minus_dm = -low.diff()
@@ -58,8 +58,9 @@ def compute_adx(df, window=14):
     tr2 = (high - close.shift()).abs()
     tr3 = (low - close.shift()).abs()
     
-    # Calculate True Range as maximum of the three values
-    tr = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3}).max(axis=1)
+    # Calculate True Range - use numpy maximum for element-wise max
+    tr_array = np.maximum(np.maximum(tr1.values, tr2.values), tr3.values)
+    tr = pd.Series(tr_array, index=df.index)
 
     atr = tr.rolling(window=window).mean()
     plus_di = 100 * (plus_dm.rolling(window=window).mean() / atr)
@@ -69,7 +70,7 @@ def compute_adx(df, window=14):
     adx = dx.rolling(window=window).mean()
     
     # Ensure we return a Series, not a DataFrame
-    return pd.Series(adx, index=df.index, name='ADX')
+    return pd.Series(adx.values, index=df.index, name='ADX')
 
 def get_zone(row):
     p, v, t, r, a = row["%B_Close"], row["%B_Volume"], row["%B_Traded_Value"], row["%B_RSI"], row["%B_ADX"]
@@ -103,6 +104,10 @@ if st.button("Fetch & Analyze"):
         st.error("No data found. Please check the symbol or period.")
     else:
         try:
+            # Flatten multi-level columns if they exist
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            
             data["Traded_Value"] = data["Close"] * data["Volume"]
             data["RSI"] = compute_rsi(data)
             data["ADX"] = compute_adx(data)
