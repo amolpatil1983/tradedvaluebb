@@ -97,6 +97,7 @@ uploaded_file = st.file_uploader("Upload Stock List (CSV with 'Symbol' and 'SERI
 
 if uploaded_file:
     stocks_df = pd.read_csv(uploaded_file)
+    stocks_df.columns = stocks_df.columns.str.strip()
     stocks_df = stocks_df[stocks_df["SERIES"] == "EQ"]
     symbols = stocks_df["Symbol"].unique().tolist()
 
