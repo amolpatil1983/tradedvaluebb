@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import datetime as dt
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="Stock Phase Analyzer", layout="wide")
@@ -42,7 +41,7 @@ def compute_adx(data, period=14):
     minus_di = 100 * (minus_dm.ewm(alpha=1/period).mean() / atr)
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     adx = dx.ewm(alpha=1/period).mean()
-    return adx
+    return adx.squeeze()  # Ensure 1D Series
 
 def classify_phase(bb_price, bb_value, bb_vol, bb_rsi, bb_adx):
     avg_bb = (bb_price + bb_value + bb_vol + bb_rsi + bb_adx) / 5
@@ -61,6 +60,7 @@ def classify_phase(bb_price, bb_value, bb_vol, bb_rsi, bb_adx):
 # Streamlit UI
 # -----------------------------
 st.title("📊 Intelligent Stock Phase Analyzer")
+
 symbol = st.text_input("Enter Stock Symbol (e.g. HDFCBANK):", "HDFCBANK")
 period = st.selectbox("Select Lookback Period:", ["6mo", "1y", "2y", "5y"], index=1)
 interval = st.selectbox("Select Interval:", ["1d", "1wk", "1mo"], index=0)
@@ -74,7 +74,7 @@ if st.button("Analyze"):
     else:
         data["Value_Traded"] = data["Close"] * data["Volume"]
 
-        # Compute technical indicators
+        # Compute indicators
         data["RSI"] = compute_rsi(data["Close"])
         data["ADX"] = compute_adx(data)
 
@@ -82,15 +82,16 @@ if st.button("Analyze"):
         data["%BB_Price"] = compute_bb(data["Close"])
         data["%BB_Volume"] = compute_bb(data["Volume"])
         data["%BB_Value"] = compute_bb(data["Value_Traded"])
-        data["%BB_RSI"] = compute_bb(data["RSI"].dropna())
-        data["%BB_ADX"] = compute_bb(data["ADX"].dropna())
+        data["%BB_RSI"] = compute_bb(data["RSI"])
+        data["%BB_ADX"] = compute_bb(data["ADX"])
 
-        # Forward-fill to align shapes
-        data = data.fillna(method="ffill")
+        # Clean up
+        data = data.fillna(method="ffill").dropna()
 
-        # Classify phase row-wise
+        # Phase classification
         data["Phase"] = data.apply(lambda row: classify_phase(
-            row["%BB_Price"], row["%BB_Value"], row["%BB_Volume"], row["%BB_RSI"], row["%BB_ADX"]), axis=1)
+            row["%BB_Price"], row["%BB_Value"], row["%BB_Volume"],
+            row["%BB_RSI"], row["%BB_ADX"]), axis=1)
 
         # -----------------------------
         # Visualization
@@ -107,13 +108,13 @@ if st.button("Analyze"):
         fig.add_trace(go.Scatter(
             x=data.index, y=data["%BB_ADX"], mode="lines", name="%BB_ADX", line=dict(width=1.5)))
 
-        # Add vertical color-coded regions
+        # Color-coded vertical zones for each phase
         phase_colors = {
-            "Accumulation": "rgba(0, 200, 100, 0.1)",
-            "Trending Up": "rgba(0, 100, 250, 0.1)",
-            "Distribution": "rgba(250, 150, 0, 0.1)",
-            "Trending Down": "rgba(250, 0, 0, 0.1)",
-            "Transition": "rgba(200, 200, 200, 0.1)"
+            "Accumulation": "rgba(0, 200, 100, 0.15)",
+            "Trending Up": "rgba(0, 100, 250, 0.15)",
+            "Distribution": "rgba(250, 150, 0, 0.15)",
+            "Trending Down": "rgba(250, 0, 0, 0.15)",
+            "Transition": "rgba(150, 150, 150, 0.1)"
         }
 
         prev_phase = None
@@ -123,9 +124,13 @@ if st.button("Analyze"):
             if phase != prev_phase:
                 if prev_phase is not None and start_idx is not None:
                     fig.add_vrect(
-                        x0=data.index[start_idx], x1=data.index[i],
+                        x0=data.index[start_idx],
+                        x1=data.index[i],
                         fillcolor=phase_colors.get(prev_phase, "rgba(0,0,0,0)"),
-                        opacity=0.3, layer="below", line_width=0)
+                        opacity=0.3,
+                        layer="below",
+                        line_width=0
+                    )
                 start_idx = i
                 prev_phase = phase
 
@@ -141,4 +146,3 @@ if st.button("Analyze"):
 
         st.subheader("📌 Current Stock Phase:")
         st.success(f"{symbol_full} is currently in **{data['Phase'].iloc[-1]}** phase.")
-
