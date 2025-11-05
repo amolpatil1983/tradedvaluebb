@@ -1,153 +1,144 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
+import yfinance as yf
+import datetime as dt
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Stock %BB + RSI + ADX Zones", layout="wide")
+st.set_page_config(page_title="Stock Phase Analyzer", layout="wide")
 
-st.title("📊 %BB Comparison with RSI & ADX — Multi-Signal Market Phases")
+# -----------------------------
+# Helper Functions
+# -----------------------------
+def compute_bb(series, window=20, num_std=2):
+    sma = series.rolling(window).mean()
+    std = series.rolling(window).std()
+    upper = sma + num_std * std
+    lower = sma - num_std * std
+    bb_percent = 100 * (series - lower) / (upper - lower)
+    return bb_percent.clip(0, 100)
 
-st.markdown("""
-This app computes **%B (Percent Bollinger Band)** for:
-- **Price**, **Volume**, **Traded Value**, **RSI**, and **ADX**  
-and visually classifies **market phases** (Accumulation, Markup, Distribution, Markdown)
-based on a combined %BB logic.
-""")
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-# --- Inputs ---
-symbol = st.text_input("Enter Stock Symbol (NSE):", "HDFCBANK").strip().upper()
-lookback_period = st.selectbox("Lookback Period:", ["6mo", "1y", "2y", "3y", "5y"], index=1)
-interval = st.selectbox("Data Interval:", ["1d", "1wk", "1mo"], index=0)
-bb_window = st.slider("Bollinger Band Window:", 10, 60, 20)
-bb_std = st.slider("BB Standard Deviations:", 1.0, 3.0, 2.0, step=0.1)
+def compute_adx(data, period=14):
+    high, low, close = data["High"], data["Low"], data["Close"]
+    plus_dm = high.diff()
+    minus_dm = low.diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = (-minus_dm).where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
 
-if st.button("Fetch & Analyze"):
-    ticker = symbol + ".NS"
-    with st.spinner(f"Fetching {lookback_period} data for {ticker}..."):
-        data = yf.download(ticker, period=lookback_period, interval=interval, progress=False)
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.rolling(period).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
+    minus_di = 100 * (minus_dm.ewm(alpha=1/period).mean() / atr)
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    adx = dx.ewm(alpha=1/period).mean()
+    return adx
+
+def classify_phase(bb_price, bb_value, bb_vol, bb_rsi, bb_adx):
+    avg_bb = (bb_price + bb_value + bb_vol + bb_rsi + bb_adx) / 5
+    if bb_adx < 25 and avg_bb < 40:
+        return "Accumulation"
+    elif bb_adx > 25 and bb_rsi > 55 and bb_price > 60:
+        return "Trending Up"
+    elif bb_adx > 25 and bb_rsi < 45 and bb_price < 40:
+        return "Trending Down"
+    elif bb_adx < 25 and avg_bb > 60:
+        return "Distribution"
+    else:
+        return "Transition"
+
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+st.title("📊 Intelligent Stock Phase Analyzer")
+symbol = st.text_input("Enter Stock Symbol (e.g. HDFCBANK):", "HDFCBANK")
+period = st.selectbox("Select Lookback Period:", ["6mo", "1y", "2y", "5y"], index=1)
+interval = st.selectbox("Select Interval:", ["1d", "1wk", "1mo"], index=0)
+
+if st.button("Analyze"):
+    symbol_full = symbol.strip().upper() + ".NS"
+    data = yf.download(symbol_full, period=period, interval=interval, auto_adjust=True)
 
     if data.empty:
-        st.error("No data found. Please check the symbol or try another period.")
+        st.error("No data found. Check the symbol or try another range.")
     else:
-        # --- Derived Columns ---
-        data["Traded_Value"] = data["Close"] * data["Volume"]
+        data["Value_Traded"] = data["Close"] * data["Volume"]
 
-        # --- %B Computation ---
-        def compute_bb(df, column, window, std):
-            ma = df[column].rolling(window).mean()
-            s = df[column].rolling(window).std()
-            lower = ma - std * s
-            upper = ma + std * s
-            return (df[column] - lower) / (upper - lower) * 100
+        # Compute technical indicators
+        data["RSI"] = compute_rsi(data["Close"])
+        data["ADX"] = compute_adx(data)
 
-        # --- RSI ---
-        delta = data["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        roll_up = gain.ewm(span=14, adjust=False).mean()
-        roll_down = loss.ewm(span=14, adjust=False).mean()
-        rs = roll_up / roll_down
-        data["RSI"] = 100 - (100 / (1 + rs))
+        # Compute %BB for each
+        data["%BB_Price"] = compute_bb(data["Close"])
+        data["%BB_Volume"] = compute_bb(data["Volume"])
+        data["%BB_Value"] = compute_bb(data["Value_Traded"])
+        data["%BB_RSI"] = compute_bb(data["RSI"].dropna())
+        data["%BB_ADX"] = compute_bb(data["ADX"].dropna())
 
-        # --- ADX ---
-        high, low, close = data["High"], data["Low"], data["Close"]
+        # Forward-fill to align shapes
+        data = data.fillna(method="ffill")
 
-        plus_dm = high.diff()
-        minus_dm = low.diff().abs()
+        # Classify phase row-wise
+        data["Phase"] = data.apply(lambda row: classify_phase(
+            row["%BB_Price"], row["%BB_Value"], row["%BB_Volume"], row["%BB_RSI"], row["%BB_ADX"]), axis=1)
 
-        plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0)
-        minus_dm = np.where((minus_dm > plus_dm) & (low.diff() < 0), minus_dm, 0)
-
-        tr = np.maximum.reduce([
-            (high - low).abs(),
-            (high - close.shift()).abs(),
-            (low - close.shift()).abs()
-        ])
-        atr = pd.Series(tr, index=data.index).rolling(14).mean()
-
-        plus_di = 100 * pd.Series(plus_dm, index=data.index).rolling(14).mean() / atr
-        minus_di = 100 * pd.Series(minus_dm, index=data.index).rolling(14).mean() / atr
-
-        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-        data["ADX"] = dx.ewm(alpha=1/14, adjust=False).mean()
-
-        # --- %B for all ---
-        for col in ["Close", "Volume", "Traded_Value", "RSI", "ADX"]:
-            data[f"%B_{col}"] = compute_bb(data, col, bb_window, bb_std)
-
-        data.dropna(inplace=True)
-
-        # --- Zone Classification ---
-        def get_zone(row):
-            p, v, t, r, a = row["%B_Close"], row["%B_Volume"], row["%B_Traded_Value"], row["%B_RSI"], row["%B_ADX"]
-            if p < 30 and v < 30 and t < 30 and r < 40 and a < 50:
-                return "Accumulation"
-            elif p > 70 and v > 70 and t > 70 and r > 60 and a < 50:
-                return "Distribution"
-            elif p > 50 and r > 60 and a > 50:
-                return "Markup"
-            elif p < 50 and r < 40 and a < 40:
-                return "Markdown"
-            else:
-                return "Neutral"
-
-        data["Zone"] = data.apply(get_zone, axis=1)
-
-        # --- Price Chart ---
-        price_fig = go.Figure()
-        price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"],
-                                       name="Close Price", line=dict(color="cyan")))
-        price_fig.update_layout(title=f"{symbol} - Price Chart",
-                                yaxis_title="Price (INR)",
-                                template="plotly_dark", height=400)
-        st.plotly_chart(price_fig, use_container_width=True)
-
-        # --- %BB Chart with Zones ---
+        # -----------------------------
+        # Visualization
+        # -----------------------------
         fig = go.Figure()
-        zone_colors = {
-            "Accumulation": "rgba(0,255,0,0.1)",
-            "Markup": "rgba(0,128,255,0.1)",
-            "Distribution": "rgba(255,165,0,0.15)",
-            "Markdown": "rgba(255,0,0,0.1)",
-            "Neutral": "rgba(255,255,255,0.05)"
+        fig.add_trace(go.Scatter(
+            x=data.index, y=data["%BB_Price"], mode="lines", name="%BB_Price", line=dict(width=1.5)))
+        fig.add_trace(go.Scatter(
+            x=data.index, y=data["%BB_Value"], mode="lines", name="%BB_Value", line=dict(width=1.5)))
+        fig.add_trace(go.Scatter(
+            x=data.index, y=data["%BB_Volume"], mode="lines", name="%BB_Volume", line=dict(width=1.5)))
+        fig.add_trace(go.Scatter(
+            x=data.index, y=data["%BB_RSI"], mode="lines", name="%BB_RSI", line=dict(width=1.5)))
+        fig.add_trace(go.Scatter(
+            x=data.index, y=data["%BB_ADX"], mode="lines", name="%BB_ADX", line=dict(width=1.5)))
+
+        # Add vertical color-coded regions
+        phase_colors = {
+            "Accumulation": "rgba(0, 200, 100, 0.1)",
+            "Trending Up": "rgba(0, 100, 250, 0.1)",
+            "Distribution": "rgba(250, 150, 0, 0.1)",
+            "Trending Down": "rgba(250, 0, 0, 0.1)",
+            "Transition": "rgba(200, 200, 200, 0.1)"
         }
 
-        current_zone = None
+        prev_phase = None
         start_idx = None
         for i in range(len(data)):
-            zone = data["Zone"].iloc[i]
-            if current_zone is None:
-                current_zone, start_idx = zone, i
-            elif zone != current_zone or i == len(data) - 1:
-                end_idx = i if i < len(data) - 1 else i
-                fig.add_vrect(
-                    x0=data.index[start_idx],
-                    x1=data.index[end_idx],
-                    fillcolor=zone_colors.get(current_zone, "rgba(255,255,255,0.05)"),
-                    opacity=0.3, layer="below", line_width=0)
-                current_zone, start_idx = zone, i
-
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Close"], name="%B (Price)", line=dict(color="yellow")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Volume"], name="%B (Volume)", line=dict(color="lightgreen")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Traded_Value"], name="%B (Traded Value)", line=dict(color="orange")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_RSI"], name="%B (RSI)", line=dict(color="magenta")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_ADX"], name="%B (ADX)", line=dict(color="cyan")))
-
-        fig.add_hline(y=100, line_dash="dot", annotation_text="Upper Band", annotation_position="top left")
-        fig.add_hline(y=0, line_dash="dot", annotation_text="Lower Band", annotation_position="bottom left")
-        fig.add_hline(y=50, line_dash="dot", annotation_text="Midpoint", annotation_position="top left")
+            phase = data["Phase"].iloc[i]
+            if phase != prev_phase:
+                if prev_phase is not None and start_idx is not None:
+                    fig.add_vrect(
+                        x0=data.index[start_idx], x1=data.index[i],
+                        fillcolor=phase_colors.get(prev_phase, "rgba(0,0,0,0)"),
+                        opacity=0.3, layer="below", line_width=0)
+                start_idx = i
+                prev_phase = phase
 
         fig.update_layout(
-            title=f"{symbol} — %B Comparison (Price, Volume, Traded Value, RSI, ADX)",
+            title=f"Stock Phase Analysis for {symbol_full}",
             xaxis_title="Date",
-            yaxis_title="%B",
-            template="plotly_dark",
-            height=700,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
+            yaxis_title="% Bollinger Band (0–100)",
+            legend_title="Indicators",
+            height=700
         )
 
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("Show Data with Zones"):
-            st.dataframe(data[["Close", "%B_Close", "%B_RSI", "%B_ADX", "Zone"]].tail(25))
+        st.subheader("📌 Current Stock Phase:")
+        st.success(f"{symbol_full} is currently in **{data['Phase'].iloc[-1]}** phase.")
+
