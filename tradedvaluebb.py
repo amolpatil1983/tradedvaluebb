@@ -3,13 +3,16 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Stock %BB Visualizer", layout="wide")
+st.set_page_config(page_title="Stock %BB Comparison", layout="wide")
 
-st.title("📈 Price and %BB Visualizer (Based on Daily Traded Value)")
+st.title("📊 %BB Comparison — Price / Volume / Traded Value")
 st.markdown("""
-This app pulls historical stock data from Yahoo Finance (NSE India) and computes:
+This app compares **%B (Percent Bollinger Band)** computed separately for:
+- **Close Price**
+- **Volume**
 - **Traded Value = Close × Volume**
-- **%B (Percent Bollinger Band)** from Traded Value  
+
+Data is fetched from Yahoo Finance (NSE India).
 """)
 
 # --- User Inputs ---
@@ -24,40 +27,48 @@ if st.button("Fetch & Analyze"):
     ticker = symbol + ".NS"
     with st.spinner(f"Fetching {lookback_period} data for {ticker}..."):
         data = yf.download(ticker, period=lookback_period, interval=interval, progress=False)
-    
+
     if data.empty:
         st.error("No data found. Please check the symbol or try another period.")
     else:
-        # --- Compute Traded Value and %BB ---
+        # --- Compute derived series ---
         data["Traded_Value"] = data["Close"] * data["Volume"]
 
-        # Bollinger Bands on Traded Value
-        data["MA"] = data["Traded_Value"].rolling(bb_window).mean()
-        data["STD"] = data["Traded_Value"].rolling(bb_window).std()
-        data["Upper"] = data["MA"] + bb_std * data["STD"]
-        data["Lower"] = data["MA"] - bb_std * data["STD"]
-        data["%B"] = (data["Traded_Value"] - data["Lower"]) / (data["Upper"] - data["Lower"]) * 100
+        def compute_bb(df, column, window, std):
+            ma = df[column].rolling(window).mean()
+            s = df[column].rolling(window).std()
+            lower = ma - std * s
+            upper = ma + std * s
+            bb = (df[column] - lower) / (upper - lower) * 100
+            return bb
 
-        # Drop NA for smooth chart
+        # Compute %B for all three metrics
+        data["%B_Price"] = compute_bb(data, "Close", bb_window, bb_std)
+        data["%B_Volume"] = compute_bb(data, "Volume", bb_window, bb_std)
+        data["%B_TradedVal"] = compute_bb(data, "Traded_Value", bb_window, bb_std)
+
         data = data.dropna()
 
         # --- Plot 1: Price Chart ---
         fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Close", line=dict(color="blue")))
+        fig1.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Close", line=dict(color="cyan")))
         fig1.update_layout(
             title=f"{symbol} - Price Chart ({lookback_period})",
             xaxis_title="Date", yaxis_title="Price (INR)", template="plotly_dark", height=400
         )
 
-        # --- Plot 2: %BB Chart ---
+        # --- Plot 2: %BB Combined Chart ---
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=data.index, y=data["%B"], name="%B", line=dict(color="orange")))
+        fig2.add_trace(go.Scatter(x=data.index, y=data["%B_Price"], name="%B (Price)", line=dict(color="yellow")))
+        fig2.add_trace(go.Scatter(x=data.index, y=data["%B_Volume"], name="%B (Volume)", line=dict(color="lightgreen")))
+        fig2.add_trace(go.Scatter(x=data.index, y=data["%B_TradedVal"], name="%B (Traded Value)", line=dict(color="orange")))
         fig2.add_hline(y=100, line_dash="dot", annotation_text="Upper Band")
         fig2.add_hline(y=0, line_dash="dot", annotation_text="Lower Band")
         fig2.add_hline(y=50, line_dash="dot", annotation_text="Midpoint (MA)")
         fig2.update_layout(
-            title=f"{symbol} - %B (Bollinger from Traded Value)",
-            xaxis_title="Date", yaxis_title="%B", template="plotly_dark", height=400
+            title=f"{symbol} - %B Comparison (Price / Volume / Traded Value)",
+            xaxis_title="Date", yaxis_title="%B", template="plotly_dark", height=500,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
         )
 
         # --- Display Charts ---
@@ -66,4 +77,4 @@ if st.button("Fetch & Analyze"):
 
         # --- Optional Data Table ---
         with st.expander("Show Raw Data"):
-            st.dataframe(data.tail(20))
+            st.dataframe(data[["Close", "Volume", "Traded_Value", "%B_Price", "%B_Volume", "%B_TradedVal"]].tail(20))
