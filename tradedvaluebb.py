@@ -5,19 +5,26 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Pre-Breakout Accumulation Detector", layout="wide")
+st.set_page_config(page_title="Smart Money Phase Detector", layout="wide")
 
-st.title("🎯 Pre-Breakout Accumulation Detector")
+st.title("🎯 Smart Money Accumulation & Distribution Detector")
 
 st.markdown("""
-This app identifies **accumulation zones before bullish breakouts** using:
-- **Volume Accumulation**: Rising volume while price is quiet (smart money accumulating)
-- **Traded Value Surge**: Increasing money flow at support levels
-- **RSI Divergence**: Price makes lower lows, but RSI makes higher lows (hidden bullish divergence)
-- **ADX Compression**: Low volatility before expansion (coiling spring)
-- **Bollinger Band Squeeze**: Price compression indicating imminent volatility expansion
+This app identifies **accumulation zones before bullish breakouts** and **distribution zones before bearish breakdowns**:
 
-**Goal**: Catch stocks *before* they break out, not after.
+**Accumulation Signals** (Buy Zone):
+- Volume rising while price stable/falling (smart money accumulating)
+- Traded value surge at support levels
+- RSI bullish divergence (hidden strength)
+- ADX compression (coiling spring)
+- Bollinger Band squeeze
+
+**Distribution Signals** (Sell Zone):
+- Volume rising while price stable/rising (smart money distributing)
+- Traded value surge at resistance levels
+- RSI bearish divergence (hidden weakness)
+- ADX at extremes (trend exhaustion)
+- Price at resistance with decreasing momentum
 """)
 
 # --- User Input ---
@@ -79,7 +86,7 @@ def detect_accumulation_signals(data):
     # 1. Volume Accumulation: Volume rising while price stable/falling
     vol_ma = data['Volume'].rolling(20).mean()
     price_change = data['Close'].pct_change(20)
-    signals['volume_accumulation'] = (data['Volume'] > vol_ma * 1.2) & (abs(price_change) < 0.05)
+    signals['volume_accumulation'] = (data['Volume'] > vol_ma * 1.2) & (price_change < 0.05)
     
     # 2. Traded Value Surge at Low Prices
     tv_ma = data['Traded_Value'].rolling(20).mean()
@@ -100,7 +107,7 @@ def detect_accumulation_signals(data):
     signals['at_support'] = (data['%B_Close'] > 0) & (data['%B_Close'] < 30)
     
     # Accumulation Score (0-6)
-    data['Accumulation_Score'] = (
+    acc_score = (
         signals['volume_accumulation'].astype(int) +
         signals['value_surge'].astype(int) +
         signals['rsi_divergence'].astype(int) +
@@ -109,13 +116,49 @@ def detect_accumulation_signals(data):
         signals['at_support'].astype(int)
     )
     
-    # Strong Accumulation: Score >= 4
-    data['Strong_Accumulation'] = data['Accumulation_Score'] >= 4
+    return acc_score, signals
+
+def detect_distribution_signals(data):
+    """Detect pre-breakdown distribution patterns"""
+    signals = pd.DataFrame(index=data.index)
     
-    return data, signals
+    # 1. Volume Distribution: Volume rising while price stalling at highs
+    vol_ma = data['Volume'].rolling(20).mean()
+    price_change = data['Close'].pct_change(20)
+    signals['volume_distribution'] = (data['Volume'] > vol_ma * 1.2) & (price_change > -0.05) & (data['%B_Close'] > 60)
+    
+    # 2. Traded Value Surge at High Prices (selling into strength)
+    tv_ma = data['Traded_Value'].rolling(20).mean()
+    signals['value_surge_high'] = (data['Traded_Value'] > tv_ma * 1.3) & (data['%B_Close'] > 70)
+    
+    # 3. RSI Bearish Divergence (price up, RSI down)
+    price_slope = data['Close'].diff(5)
+    rsi_slope = data['RSI'].diff(5)
+    signals['rsi_divergence'] = (price_slope > 0) & (rsi_slope < 0) & (data['RSI'] > 60)
+    
+    # 4. ADX Exhaustion (high ADX declining = trend weakening)
+    signals['adx_exhaustion'] = (data['ADX'] > 30) & (data['ADX'].diff() < -0.5)
+    
+    # 5. Price at Resistance (%B > 70)
+    signals['at_resistance'] = data['%B_Close'] > 70
+    
+    # 6. Momentum Loss (price high but RSI falling)
+    signals['momentum_loss'] = (data['%B_Close'] > 65) & (data['RSI'].diff(3) < -2)
+    
+    # Distribution Score (0-6)
+    dist_score = (
+        signals['volume_distribution'].astype(int) +
+        signals['value_surge_high'].astype(int) +
+        signals['rsi_divergence'].astype(int) +
+        signals['adx_exhaustion'].astype(int) +
+        signals['at_resistance'].astype(int) +
+        signals['momentum_loss'].astype(int)
+    )
+    
+    return dist_score, signals
 
 # --- Fetch and Analyze ---
-if st.button("🔍 Scan for Pre-Breakout Accumulation", type="primary"):
+if st.button("🔍 Scan for Smart Money Activity", type="primary"):
     ticker = symbol + ".NS"
     with st.spinner(f"Analyzing {ticker}..."):
         try:
@@ -146,54 +189,82 @@ if st.button("🔍 Scan for Pre-Breakout Accumulation", type="primary"):
                 st.error("Insufficient data. Try a longer lookback period.")
                 st.stop()
             
-            # Detect accumulation signals
-            data, signals = detect_accumulation_signals(data)
+            # Detect both accumulation and distribution
+            data['Accumulation_Score'], acc_signals = detect_accumulation_signals(data)
+            data['Distribution_Score'], dist_signals = detect_distribution_signals(data)
+            
+            data['Strong_Accumulation'] = data['Accumulation_Score'] >= 4
+            data['Strong_Distribution'] = data['Distribution_Score'] >= 4
+            
+            # Determine phase
+            data['Phase'] = 'Neutral'
+            data.loc[data['Strong_Accumulation'], 'Phase'] = 'Accumulation'
+            data.loc[data['Strong_Distribution'], 'Phase'] = 'Distribution'
             
             # --- Current Status ---
-            current_score = data['Accumulation_Score'].iloc[-1]
-            is_accumulating = data['Strong_Accumulation'].iloc[-1]
+            current_acc = data['Accumulation_Score'].iloc[-1]
+            current_dist = data['Distribution_Score'].iloc[-1]
+            current_phase = data['Phase'].iloc[-1]
             
             st.subheader("📊 Current Market Status")
             
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                color = "🟢" if current_score >= 4 else "🟡" if current_score >= 2 else "🔴"
-                st.metric("Accumulation Score", f"{color} {current_score}/6")
+                if current_phase == 'Accumulation':
+                    st.metric("Phase", "🟢 ACCUMULATION", delta="Bullish Setup")
+                elif current_phase == 'Distribution':
+                    st.metric("Phase", "🔴 DISTRIBUTION", delta="Bearish Setup")
+                else:
+                    st.metric("Phase", "⚪ Neutral", delta="Wait")
             with col2:
-                st.metric("Current Price", f"₹{data['Close'].iloc[-1]:.2f}")
+                color = "🟢" if current_acc >= 4 else "🟡" if current_acc >= 2 else "⚪"
+                st.metric("Accumulation", f"{color} {current_acc}/6")
             with col3:
-                st.metric("RSI", f"{data['RSI'].iloc[-1]:.1f}")
+                color = "🔴" if current_dist >= 4 else "🟡" if current_dist >= 2 else "⚪"
+                st.metric("Distribution", f"{color} {current_dist}/6")
             with col4:
+                st.metric("RSI", f"{data['RSI'].iloc[-1]:.1f}")
+            with col5:
                 st.metric("ADX", f"{data['ADX'].iloc[-1]:.1f}")
             
-            if is_accumulating:
-                st.success("🎯 **STRONG ACCUMULATION DETECTED** - Potential pre-breakout zone!")
-                st.info("✅ 4+ signals confirm smart money accumulation. Watch for breakout above resistance.")
-            elif current_score >= 2:
-                st.warning("⚠️ Moderate accumulation signs. Monitor closely.")
+            # Alert messages
+            if current_phase == 'Accumulation':
+                st.success("🎯 **STRONG ACCUMULATION DETECTED** - Potential pre-breakout zone! Smart money accumulating.")
+                st.info("✅ Strategy: Watch for breakout above resistance with volume expansion. Consider entry on confirmation.")
+            elif current_phase == 'Distribution':
+                st.error("⚠️ **STRONG DISTRIBUTION DETECTED** - Potential pre-breakdown zone! Smart money distributing.")
+                st.warning("❌ Strategy: Avoid buying. Consider exit if holding. Watch for breakdown below support.")
+            elif current_acc >= 2 or current_dist >= 2:
+                st.warning("⚠️ Mixed signals detected. Monitor closely for confirmation.")
             else:
-                st.info("No significant accumulation detected currently.")
+                st.info("No significant accumulation or distribution currently.")
             
             # --- Main Chart ---
             fig = make_subplots(
                 rows=4, cols=1,
                 shared_xaxes=True,
                 vertical_spacing=0.03,
-                subplot_titles=(f'{symbol} Price with Accumulation Zones', 'Volume & Traded Value', 'RSI', 'ADX'),
+                subplot_titles=(f'{symbol} Price with Smart Money Zones', 'Volume & Traded Value', 'RSI', 'ADX'),
                 row_heights=[0.4, 0.2, 0.2, 0.2]
             )
             
-            # Price with accumulation zones
+            # Price with accumulation/distribution zones
             fig.add_trace(go.Scatter(x=data.index, y=data['Close'], name='Price', 
-                                    line=dict(color='cyan', width=2)), row=1, col=1)
+                                    line=dict(color='white', width=2)), row=1, col=1)
             
-            # Highlight strong accumulation zones
-            accumulation_zones = data[data['Strong_Accumulation']].index
-            for idx in accumulation_zones:
-                if idx in data.index:
+            # Highlight zones
+            for i in range(len(data)):
+                if data['Strong_Accumulation'].iloc[i]:
                     fig.add_vrect(
-                        x0=idx, x1=idx,
+                        x0=data.index[i], x1=data.index[min(i+1, len(data)-1)],
                         fillcolor="rgba(0,255,0,0.3)",
+                        layer="below", line_width=0,
+                        row=1, col=1
+                    )
+                elif data['Strong_Distribution'].iloc[i]:
+                    fig.add_vrect(
+                        x0=data.index[i], x1=data.index[min(i+1, len(data)-1)],
+                        fillcolor="rgba(255,0,0,0.3)",
                         layer="below", line_width=0,
                         row=1, col=1
                     )
@@ -207,8 +278,10 @@ if st.button("🔍 Scan for Pre-Breakout Accumulation", type="primary"):
                                     line=dict(color='gray', dash='dash', width=1)), row=1, col=1)
             
             # Volume & Traded Value
+            colors = ['green' if data['Strong_Accumulation'].iloc[i] else 'red' if data['Strong_Distribution'].iloc[i] else 'lightblue' 
+                      for i in range(len(data))]
             fig.add_trace(go.Bar(x=data.index, y=data['Volume'], name='Volume',
-                                marker_color='lightblue', opacity=0.5), row=2, col=1)
+                                marker_color=colors, opacity=0.6), row=2, col=1)
             
             fig.add_trace(go.Scatter(x=data.index, y=data['Traded_Value']/1e6, name='Traded Value (M)',
                                     line=dict(color='orange', width=1), yaxis='y2'), row=2, col=1)
@@ -238,16 +311,21 @@ if st.button("🔍 Scan for Pre-Breakout Accumulation", type="primary"):
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # --- Accumulation Score Chart ---
-            st.subheader("📈 Accumulation Score Over Time")
+            # --- Score Comparison Chart ---
+            st.subheader("📈 Accumulation vs Distribution Scores")
             score_fig = go.Figure()
             score_fig.add_trace(go.Scatter(x=data.index, y=data['Accumulation_Score'],
-                                          name='Score', fill='tozeroy',
+                                          name='Accumulation', fill='tozeroy',
                                           line=dict(color='lime', width=2)))
+            score_fig.add_trace(go.Scatter(x=data.index, y=-data['Distribution_Score'],
+                                          name='Distribution', fill='tozeroy',
+                                          line=dict(color='red', width=2)))
             score_fig.add_hline(y=4, line_dash="dash", line_color="green", 
-                               annotation_text="Strong Accumulation Threshold")
+                               annotation_text="Strong Accumulation")
+            score_fig.add_hline(y=-4, line_dash="dash", line_color="red", 
+                               annotation_text="Strong Distribution")
             score_fig.update_layout(
-                yaxis_title="Accumulation Score (0-6)",
+                yaxis_title="Score (Acc +, Dist -)",
                 template="plotly_dark",
                 height=300
             )
@@ -255,21 +333,40 @@ if st.button("🔍 Scan for Pre-Breakout Accumulation", type="primary"):
             
             # --- Signal Breakdown ---
             with st.expander("🔍 View Signal Breakdown"):
-                latest = data.iloc[-1]
-                st.markdown("### Current Signals:")
-                st.write(f"✅ Volume Accumulation: {signals['volume_accumulation'].iloc[-1]}")
-                st.write(f"✅ Value Surge at Support: {signals['value_surge'].iloc[-1]}")
-                st.write(f"✅ RSI Bullish Divergence: {signals['rsi_divergence'].iloc[-1]}")
-                st.write(f"✅ ADX Compression: {signals['adx_compression'].iloc[-1]}")
-                st.write(f"✅ Bollinger Band Squeeze: {signals['bb_squeeze'].iloc[-1]}")
-                st.write(f"✅ Price at Support: {signals['at_support'].iloc[-1]}")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### 🟢 Accumulation Signals:")
+                    st.write(f"✅ Volume Accumulation: {acc_signals['volume_accumulation'].iloc[-1]}")
+                    st.write(f"✅ Value Surge at Support: {acc_signals['value_surge'].iloc[-1]}")
+                    st.write(f"✅ RSI Bullish Divergence: {acc_signals['rsi_divergence'].iloc[-1]}")
+                    st.write(f"✅ ADX Compression: {acc_signals['adx_compression'].iloc[-1]}")
+                    st.write(f"✅ Bollinger Band Squeeze: {acc_signals['bb_squeeze'].iloc[-1]}")
+                    st.write(f"✅ Price at Support: {acc_signals['at_support'].iloc[-1]}")
+                
+                with col2:
+                    st.markdown("### 🔴 Distribution Signals:")
+                    st.write(f"⚠️ Volume Distribution: {dist_signals['volume_distribution'].iloc[-1]}")
+                    st.write(f"⚠️ Value Surge at Resistance: {dist_signals['value_surge_high'].iloc[-1]}")
+                    st.write(f"⚠️ RSI Bearish Divergence: {dist_signals['rsi_divergence'].iloc[-1]}")
+                    st.write(f"⚠️ ADX Exhaustion: {dist_signals['adx_exhaustion'].iloc[-1]}")
+                    st.write(f"⚠️ Price at Resistance: {dist_signals['at_resistance'].iloc[-1]}")
+                    st.write(f"⚠️ Momentum Loss: {dist_signals['momentum_loss'].iloc[-1]}")
+            
+            # --- Historical Performance ---
+            with st.expander("📊 Historical Phase Statistics"):
+                acc_count = (data['Strong_Accumulation']).sum()
+                dist_count = (data['Strong_Distribution']).sum()
+                
+                st.write(f"Total Accumulation Zones: **{acc_count}**")
+                st.write(f"Total Distribution Zones: **{dist_count}**")
+                st.write(f"Current Lookback: **{lookback_period}**")
             
             # --- Data Table ---
             with st.expander("📋 Recent Data"):
                 display_cols = ['Close', 'Volume', 'RSI', 'ADX', '%B_Close', 
-                               'BB_Bandwidth', 'Accumulation_Score', 'Strong_Accumulation']
-                st.dataframe(data[display_cols].tail(30).style.background_gradient(
-                    subset=['Accumulation_Score'], cmap='RdYlGn', vmin=0, vmax=6))
+                               'Accumulation_Score', 'Distribution_Score', 'Phase']
+                st.dataframe(data[display_cols].tail(30))
                 
         except Exception as e:
             st.error(f"Error: {e}")
@@ -278,8 +375,18 @@ if st.button("🔍 Scan for Pre-Breakout Accumulation", type="primary"):
 st.markdown("---")
 st.markdown("""
 ### 🎓 How to Use This Tool:
-1. **High Accumulation Score (4-6)**: Strong pre-breakout signal. Smart money accumulating.
-2. **Green Zones on Chart**: Historical accumulation periods (often followed by breakouts)
-3. **Watch for**: Low ADX + High Volume + RSI Divergence + BB Squeeze = Coiled spring ready to pop
-4. **Entry Strategy**: Wait for breakout confirmation above resistance with volume expansion
+**🟢 Accumulation (Buy Setup)**:
+- Score 4-6: Strong pre-breakout signal
+- Green zones = Smart money accumulating
+- Strategy: Wait for breakout confirmation, enter on volume spike
+
+**🔴 Distribution (Sell Setup)**:
+- Score 4-6: Strong pre-breakdown signal  
+- Red zones = Smart money distributing
+- Strategy: Avoid buying, exit positions, watch for breakdown
+
+**📊 Volume Colors**:
+- Green bars = Accumulation phase
+- Red bars = Distribution phase
+- Blue bars = Neutral
 """)
