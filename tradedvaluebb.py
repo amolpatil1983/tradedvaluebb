@@ -11,7 +11,8 @@ st.title("📊 %BB Comparison with RSI & ADX — Multi-Signal Market Phases")
 st.markdown("""
 This app computes **%B (Percent Bollinger Band)** for:
 - **Price**, **Volume**, **Traded Value**, **RSI**, and **ADX**  
-and visually classifies **market phases** (Accumulation, Markup, Distribution, Markdown).
+and visually classifies **market phases** (Accumulation, Markup, Distribution, Markdown)
+based on a combined %BB logic.
 """)
 
 # --- Inputs ---
@@ -32,48 +33,52 @@ if st.button("Fetch & Analyze"):
         # --- Derived Columns ---
         data["Traded_Value"] = data["Close"] * data["Volume"]
 
+        # --- %B Computation ---
         def compute_bb(df, column, window, std):
             ma = df[column].rolling(window).mean()
             s = df[column].rolling(window).std()
-            return (df[column] - (ma - std*s)) / ((ma + std*s) - (ma - std*s)) * 100
+            lower = ma - std * s
+            upper = ma + std * s
+            return (df[column] - lower) / (upper - lower) * 100
 
-        # --- RSI Calculation (fixed) ---
+        # --- RSI ---
         delta = data["Close"].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-
         roll_up = gain.ewm(span=14, adjust=False).mean()
         roll_down = loss.ewm(span=14, adjust=False).mean()
         rs = roll_up / roll_down
         data["RSI"] = 100 - (100 / (1 + rs))
 
-        # --- ADX Calculation (fixed) ---
-        high = data["High"]
-        low = data["Low"]
-        close = data["Close"]
+        # --- ADX ---
+        high, low, close = data["High"], data["Low"], data["Close"]
 
-        plus_dm = (high.diff()).where(high.diff() > low.diff(), 0)
-        minus_dm = (low.diff()).where(low.diff() > high.diff(), 0)
+        plus_dm = high.diff()
+        minus_dm = low.diff().abs()
 
-        tr1 = high - low
-        tr2 = (high - close.shift()).abs()
-        tr3 = (low - close.shift()).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0)
+        minus_dm = np.where((minus_dm > plus_dm) & (low.diff() < 0), minus_dm, 0)
 
-        atr = tr.ewm(alpha=1/14, adjust=False).mean()
-        plus_di = 100 * (plus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
-        minus_di = 100 * (minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
+        tr = np.maximum.reduce([
+            (high - low).abs(),
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs()
+        ])
+        atr = pd.Series(tr, index=data.index).rolling(14).mean()
+
+        plus_di = 100 * pd.Series(plus_dm, index=data.index).rolling(14).mean() / atr
+        minus_di = 100 * pd.Series(minus_dm, index=data.index).rolling(14).mean() / atr
 
         dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
         data["ADX"] = dx.ewm(alpha=1/14, adjust=False).mean()
 
-        # --- Compute all %B ---
+        # --- %B for all ---
         for col in ["Close", "Volume", "Traded_Value", "RSI", "ADX"]:
             data[f"%B_{col}"] = compute_bb(data, col, bb_window, bb_std)
 
         data.dropna(inplace=True)
 
-        # --- Define Zones ---
+        # --- Zone Classification ---
         def get_zone(row):
             p, v, t, r, a = row["%B_Close"], row["%B_Volume"], row["%B_Traded_Value"], row["%B_RSI"], row["%B_ADX"]
             if p < 30 and v < 30 and t < 30 and r < 40 and a < 50:
@@ -91,17 +96,15 @@ if st.button("Fetch & Analyze"):
 
         # --- Price Chart ---
         price_fig = go.Figure()
-        price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Close Price", line=dict(color="cyan")))
-        price_fig.update_layout(title=f"{symbol} - Price Chart", yaxis_title="Price (INR)",
+        price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"],
+                                       name="Close Price", line=dict(color="cyan")))
+        price_fig.update_layout(title=f"{symbol} - Price Chart",
+                                yaxis_title="Price (INR)",
                                 template="plotly_dark", height=400)
         st.plotly_chart(price_fig, use_container_width=True)
 
-        # --- %BB Multi-Signal Chart ---
+        # --- %BB Chart with Zones ---
         fig = go.Figure()
-
-        # Vertical colored zones
-        current_zone = None
-        start_idx = None
         zone_colors = {
             "Accumulation": "rgba(0,255,0,0.1)",
             "Markup": "rgba(0,128,255,0.1)",
@@ -110,6 +113,8 @@ if st.button("Fetch & Analyze"):
             "Neutral": "rgba(255,255,255,0.05)"
         }
 
+        current_zone = None
+        start_idx = None
         for i in range(len(data)):
             zone = data["Zone"].iloc[i]
             if current_zone is None:
@@ -123,7 +128,6 @@ if st.button("Fetch & Analyze"):
                     opacity=0.3, layer="below", line_width=0)
                 current_zone, start_idx = zone, i
 
-        # Plot all %BBs
         fig.add_trace(go.Scatter(x=data.index, y=data["%B_Close"], name="%B (Price)", line=dict(color="yellow")))
         fig.add_trace(go.Scatter(x=data.index, y=data["%B_Volume"], name="%B (Volume)", line=dict(color="lightgreen")))
         fig.add_trace(go.Scatter(x=data.index, y=data["%B_Traded_Value"], name="%B (Traded Value)", line=dict(color="orange")))
@@ -132,10 +136,10 @@ if st.button("Fetch & Analyze"):
 
         fig.add_hline(y=100, line_dash="dot", annotation_text="Upper Band", annotation_position="top left")
         fig.add_hline(y=0, line_dash="dot", annotation_text="Lower Band", annotation_position="bottom left")
-        fig.add_hline(y=50, line_dash="dot", annotation_text="Midpoint (MA)", annotation_position="top left")
+        fig.add_hline(y=50, line_dash="dot", annotation_text="Midpoint", annotation_position="top left")
 
         fig.update_layout(
-            title=f"{symbol} - %B Comparison (Price, Volume, Traded Value, RSI, ADX)",
+            title=f"{symbol} — %B Comparison (Price, Volume, Traded Value, RSI, ADX)",
             xaxis_title="Date",
             yaxis_title="%B",
             template="plotly_dark",
@@ -145,6 +149,5 @@ if st.button("Fetch & Analyze"):
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- Table ---
         with st.expander("Show Data with Zones"):
             st.dataframe(data[["Close", "%B_Close", "%B_RSI", "%B_ADX", "Zone"]].tail(25))
