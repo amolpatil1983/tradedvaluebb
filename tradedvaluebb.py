@@ -26,17 +26,19 @@ bb_std = st.slider("BB Standard Deviations:", 1.0, 3.0, 2.0, step=0.1)
 def compute_bb(df, column, window, std):
     ma = df[column].rolling(window).mean()
     s = df[column].rolling(window).std()
-    bb = (df[column] - (ma - std * s)) / ((ma + std * s) - (ma - std * s)) * 100
+    upper = ma + std * s
+    lower = ma - std * s
+    bb = (df[column] - lower) / (upper - lower) * 100
     return bb
 
 def compute_rsi(df, window=14):
     delta = df["Close"].diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    gain = np.ravel(gain)
-    loss = np.ravel(loss)
-    roll_up = pd.Series(gain, index=df.index).rolling(window).mean()
-    roll_down = pd.Series(loss, index=df.index).rolling(window).mean()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    
+    roll_up = gain.rolling(window=window).mean()
+    roll_down = loss.rolling(window=window).mean()
+    
     rs = roll_up / roll_down
     rsi = 100 - (100 / (1 + rs))
     return rsi
@@ -47,26 +49,33 @@ def compute_adx(df, window=14):
     close = df["Close"]
 
     plus_dm = high.diff()
-    minus_dm = low.diff()
+    minus_dm = -low.diff()
 
-    plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
-    minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
 
     tr1 = high - low
     tr2 = (high - close.shift()).abs()
     tr3 = (low - close.shift()).abs()
-    tr = np.max([tr1, tr2, tr3], axis=0)
+    
+    # Fix: Use pandas concat and max instead of numpy
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    atr = pd.Series(tr, index=df.index).rolling(window).mean()
-    plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window).mean() / atr)
-    minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window).mean() / atr)
+    atr = tr.rolling(window=window).mean()
+    plus_di = 100 * (plus_dm.rolling(window=window).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(window=window).mean() / atr)
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    adx = dx.rolling(window).mean()
-    return pd.Series(np.ravel(adx), index=df.index, name="ADX")
+    adx = dx.rolling(window=window).mean()
+    return adx
 
 def get_zone(row):
     p, v, t, r, a = row["%B_Close"], row["%B_Volume"], row["%B_Traded_Value"], row["%B_RSI"], row["%B_ADX"]
+    
+    # Check for NaN values
+    if pd.isna([p, v, t, r, a]).any():
+        return "Neutral"
+    
     if p < 30 and v < 30 and t < 30 and r < 40 and a < 50:
         return "Accumulation"
     elif p > 70 and v > 70 and t > 70 and r > 60 and a < 50:
@@ -82,83 +91,117 @@ def get_zone(row):
 if st.button("Fetch & Analyze"):
     ticker = symbol + ".NS"
     with st.spinner(f"Fetching {lookback_period} data for {ticker}..."):
-        data = yf.download(ticker, period=lookback_period, interval=interval, progress=False)
+        try:
+            data = yf.download(ticker, period=lookback_period, interval=interval, progress=False)
+        except Exception as e:
+            st.error(f"Error fetching data: {e}")
+            st.stop()
 
     if data.empty:
         st.error("No data found. Please check the symbol or period.")
     else:
-        data["Traded_Value"] = data["Close"] * data["Volume"]
-        data["RSI"] = compute_rsi(data)
-        data["ADX"] = compute_adx(data)
+        try:
+            data["Traded_Value"] = data["Close"] * data["Volume"]
+            data["RSI"] = compute_rsi(data)
+            data["ADX"] = compute_adx(data)
 
-        for col in ["Close", "Volume", "Traded_Value", "RSI", "ADX"]:
-            data[f"%B_{col}"] = compute_bb(data, col, bb_window, bb_std)
+            for col in ["Close", "Volume", "Traded_Value", "RSI", "ADX"]:
+                data[f"%B_{col}"] = compute_bb(data, col, bb_window, bb_std)
 
-        data.dropna(inplace=True)
-        data["Zone"] = data.apply(get_zone, axis=1)
+            data.dropna(inplace=True)
+            
+            if data.empty:
+                st.error("Insufficient data after calculations. Try a longer lookback period.")
+                st.stop()
+                
+            data["Zone"] = data.apply(get_zone, axis=1)
 
-        # --- Visualization ---
-        st.subheader(f"{symbol} - Market Phase Overview")
+            # --- Visualization ---
+            st.subheader(f"{symbol} - Market Phase Overview")
 
-        price_fig = go.Figure()
-        price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Price", line=dict(color="cyan")))
+            # Current Phase Display
+            current_phase = data["Zone"].iloc[-1]
+            phase_emoji = {
+                "Accumulation": "🟢",
+                "Markup": "🔵",
+                "Distribution": "🟠",
+                "Markdown": "🔴",
+                "Neutral": "⚪"
+            }
+            st.metric("Current Market Phase", f"{phase_emoji.get(current_phase, '⚪')} {current_phase}")
 
-        # --- Color zones vertically ---
-        zone_colors = {
-            "Accumulation": "rgba(0,255,0,0.1)",
-            "Markup": "rgba(0,128,255,0.1)",
-            "Distribution": "rgba(255,165,0,0.15)",
-            "Markdown": "rgba(255,0,0,0.1)",
-            "Neutral": "rgba(255,255,255,0.05)"
-        }
+            # Price Chart with Phase Zones
+            price_fig = go.Figure()
+            price_fig.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Price", line=dict(color="cyan")))
 
-        current_zone = None
-        start_idx = None
-        for i in range(len(data)):
-            zone = data["Zone"].iloc[i]
-            if current_zone is None:
-                current_zone, start_idx = zone, i
-            elif zone != current_zone or i == len(data) - 1:
-                end_idx = i if i < len(data) - 1 else i
-                price_fig.add_vrect(
-                    x0=data.index[start_idx],
-                    x1=data.index[end_idx],
-                    fillcolor=zone_colors.get(current_zone, "rgba(255,255,255,0.05)"),
-                    opacity=0.3, layer="below", line_width=0
-                )
-                current_zone, start_idx = zone, i
+            # --- Color zones vertically (Fixed) ---
+            zone_colors = {
+                "Accumulation": "rgba(0,255,0,0.1)",
+                "Markup": "rgba(0,128,255,0.1)",
+                "Distribution": "rgba(255,165,0,0.15)",
+                "Markdown": "rgba(255,0,0,0.1)",
+                "Neutral": "rgba(255,255,255,0.05)"
+            }
 
-        price_fig.update_layout(
-            title=f"{symbol} Price with Phase Zones",
-            yaxis_title="Price (INR)",
-            template="plotly_dark",
-            height=400
-        )
+            current_zone = data["Zone"].iloc[0]
+            start_idx = 0
+            
+            for i in range(1, len(data)):
+                zone = data["Zone"].iloc[i]
+                if zone != current_zone:
+                    # Draw rectangle for previous zone
+                    price_fig.add_vrect(
+                        x0=data.index[start_idx],
+                        x1=data.index[i-1],
+                        fillcolor=zone_colors.get(current_zone, "rgba(255,255,255,0.05)"),
+                        opacity=0.3, layer="below", line_width=0
+                    )
+                    current_zone = zone
+                    start_idx = i
+            
+            # Draw final zone
+            price_fig.add_vrect(
+                x0=data.index[start_idx],
+                x1=data.index[-1],
+                fillcolor=zone_colors.get(current_zone, "rgba(255,255,255,0.05)"),
+                opacity=0.3, layer="below", line_width=0
+            )
 
-        st.plotly_chart(price_fig, use_container_width=True)
+            price_fig.update_layout(
+                title=f"{symbol} Price with Phase Zones",
+                yaxis_title="Price (INR)",
+                template="plotly_dark",
+                height=400
+            )
 
-        # --- %BB Overlay Chart ---
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Close"], name="%B Price", line=dict(color="yellow")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Volume"], name="%B Volume", line=dict(color="lightgreen")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_Traded_Value"], name="%B Value", line=dict(color="orange")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_RSI"], name="%B RSI", line=dict(color="magenta")))
-        fig.add_trace(go.Scatter(x=data.index, y=data["%B_ADX"], name="%B ADX", line=dict(color="cyan")))
+            st.plotly_chart(price_fig, use_container_width=True)
 
-        fig.add_hline(y=100, line_dash="dot", annotation_text="Upper Band")
-        fig.add_hline(y=0, line_dash="dot", annotation_text="Lower Band")
-        fig.add_hline(y=50, line_dash="dot", annotation_text="Midpoint")
+            # --- %BB Overlay Chart ---
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=data.index, y=data["%B_Close"], name="%B Price", line=dict(color="yellow")))
+            fig.add_trace(go.Scatter(x=data.index, y=data["%B_Volume"], name="%B Volume", line=dict(color="lightgreen")))
+            fig.add_trace(go.Scatter(x=data.index, y=data["%B_Traded_Value"], name="%B Value", line=dict(color="orange")))
+            fig.add_trace(go.Scatter(x=data.index, y=data["%B_RSI"], name="%B RSI", line=dict(color="magenta")))
+            fig.add_trace(go.Scatter(x=data.index, y=data["%B_ADX"], name="%B ADX", line=dict(color="cyan")))
 
-        fig.update_layout(
-            title="%BB Indicators Comparison",
-            xaxis_title="Date",
-            yaxis_title="%B Value",
-            template="plotly_dark",
-            height=700,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
-        )
+            fig.add_hline(y=100, line_dash="dot", annotation_text="Upper Band")
+            fig.add_hline(y=0, line_dash="dot", annotation_text="Lower Band")
+            fig.add_hline(y=50, line_dash="dot", annotation_text="Midpoint")
 
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                title="%BB Indicators Comparison",
+                xaxis_title="Date",
+                yaxis_title="%B Value",
+                template="plotly_dark",
+                height=700,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
+            )
 
-        with st.expander("Show Latest Data"):
-            st.dataframe(data[["Close", "RSI", "ADX", "%B_Close", "%B_RSI", "%B_ADX", "Zone"]].tail(20))
+            st.plotly_chart(fig, use_container_width=True)
+
+            with st.expander("Show Latest Data"):
+                st.dataframe(data[["Close", "RSI", "ADX", "%B_Close", "%B_RSI", "%B_ADX", "Zone"]].tail(20))
+                
+        except Exception as e:
+            st.error(f"Error during analysis: {e}")
+            st.exception(e)
