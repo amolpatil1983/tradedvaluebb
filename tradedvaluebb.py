@@ -37,34 +37,35 @@ if st.button("Fetch & Analyze"):
             s = df[column].rolling(window).std()
             return (df[column] - (ma - std*s)) / ((ma + std*s) - (ma - std*s)) * 100
 
-        # --- RSI Calculation ---
+        # --- RSI Calculation (fixed) ---
         delta = data["Close"].diff()
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
-        roll_up = pd.Series(gain).ewm(span=14).mean()
-        roll_down = pd.Series(loss).ewm(span=14).mean()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+
+        roll_up = gain.ewm(span=14, adjust=False).mean()
+        roll_down = loss.ewm(span=14, adjust=False).mean()
         rs = roll_up / roll_down
         data["RSI"] = 100 - (100 / (1 + rs))
 
-        # --- ADX Calculation ---
+        # --- ADX Calculation (fixed) ---
         high = data["High"]
         low = data["Low"]
         close = data["Close"]
-        plus_dm = high.diff()
-        minus_dm = low.diff()
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm > 0] = 0
+
+        plus_dm = (high.diff()).where(high.diff() > low.diff(), 0)
+        minus_dm = (low.diff()).where(low.diff() > high.diff(), 0)
 
         tr1 = high - low
-        tr2 = abs(high - close.shift())
-        tr3 = abs(low - close.shift())
+        tr2 = (high - close.shift()).abs()
+        tr3 = (low - close.shift()).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-        atr = tr.rolling(window=14).mean()
-        plus_di = 100 * (plus_dm.ewm(alpha=1/14).mean() / atr)
-        minus_di = 100 * (abs(minus_dm.ewm(alpha=1/14).mean()) / atr)
+        atr = tr.ewm(alpha=1/14, adjust=False).mean()
+        plus_di = 100 * (plus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
+        minus_di = 100 * (minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
+
         dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-        data["ADX"] = dx.ewm(alpha=1/14).mean()
+        data["ADX"] = dx.ewm(alpha=1/14, adjust=False).mean()
 
         # --- Compute all %B ---
         for col in ["Close", "Volume", "Traded_Value", "RSI", "ADX"]:
