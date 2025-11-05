@@ -19,29 +19,35 @@ def compute_bb(series, window=20, num_std=2):
 
 def compute_rsi(series, period=14):
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
 def compute_adx(data, period=14):
     high, low, close = data["High"], data["Low"], data["Close"]
+
     plus_dm = high.diff()
     minus_dm = low.diff()
+
     plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
     minus_dm = (-minus_dm).where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
 
     tr1 = high - low
-    tr2 = abs(high - close.shift())
-    tr3 = abs(low - close.shift())
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    atr = tr.rolling(period).mean()
-    plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
-    minus_di = 100 * (minus_dm.ewm(alpha=1/period).mean() / atr)
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+
+    plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+    minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    adx = dx.ewm(alpha=1/period).mean()
-    return adx.squeeze()  # Ensure 1D Series
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+
+    # Ensure this is a clean Series, not a DataFrame
+    return pd.Series(adx.values, index=data.index, name="ADX")
 
 def classify_phase(bb_price, bb_value, bb_vol, bb_rsi, bb_adx):
     avg_bb = (bb_price + bb_value + bb_vol + bb_rsi + bb_adx) / 5
@@ -85,7 +91,6 @@ if st.button("Analyze"):
         data["%BB_RSI"] = compute_bb(data["RSI"])
         data["%BB_ADX"] = compute_bb(data["ADX"])
 
-        # Clean up
         data = data.fillna(method="ffill").dropna()
 
         # Phase classification
@@ -97,18 +102,14 @@ if st.button("Analyze"):
         # Visualization
         # -----------------------------
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=data.index, y=data["%BB_Price"], mode="lines", name="%BB_Price", line=dict(width=1.5)))
-        fig.add_trace(go.Scatter(
-            x=data.index, y=data["%BB_Value"], mode="lines", name="%BB_Value", line=dict(width=1.5)))
-        fig.add_trace(go.Scatter(
-            x=data.index, y=data["%BB_Volume"], mode="lines", name="%BB_Volume", line=dict(width=1.5)))
-        fig.add_trace(go.Scatter(
-            x=data.index, y=data["%BB_RSI"], mode="lines", name="%BB_RSI", line=dict(width=1.5)))
-        fig.add_trace(go.Scatter(
-            x=data.index, y=data["%BB_ADX"], mode="lines", name="%BB_ADX", line=dict(width=1.5)))
 
-        # Color-coded vertical zones for each phase
+        for col, color in zip(
+            ["%BB_Price", "%BB_Volume", "%BB_Value", "%BB_RSI", "%BB_ADX"],
+            ["yellow", "lightgreen", "orange", "magenta", "cyan"]
+        ):
+            fig.add_trace(go.Scatter(x=data.index, y=data[col], name=col, line=dict(color=color, width=1.5)))
+
+        # Color-coded zones
         phase_colors = {
             "Accumulation": "rgba(0, 200, 100, 0.15)",
             "Trending Up": "rgba(0, 100, 250, 0.15)",
@@ -139,6 +140,7 @@ if st.button("Analyze"):
             xaxis_title="Date",
             yaxis_title="% Bollinger Band (0–100)",
             legend_title="Indicators",
+            template="plotly_dark",
             height=700
         )
 
